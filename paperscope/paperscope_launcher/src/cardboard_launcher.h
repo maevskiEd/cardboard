@@ -19,6 +19,7 @@
 #include <android/asset_manager.h>
 #include <jni.h>
 
+#include <atomic>
 #include <vector>
 
 #include <GLES2/gl2.h>
@@ -320,6 +321,12 @@ class CardboardLauncher {
   void DetachPanel();
 
   /**
+   * Turns the panel around the user so it faces the current head direction
+   * (yaw only, the panel stays upright).
+   */
+  void PlacePanelInFront();
+
+  /**
    * Gets the direction the head is looking at, in world space.
    */
   std::array<float, 4> GetHeadForward() const;
@@ -353,6 +360,11 @@ class CardboardLauncher {
   cardboard_demo::Matrix4x4 panel_in_head_{
       cardboard_demo::GetTranslationMatrix({0.f, 0.f, 0.f})};
   bool panel_attached_{false};
+
+  // Set on start and resume (UI thread); the panel then follows the head yaw
+  // for |place_panel_time_| seconds while the head tracker settles.
+  std::atomic<bool> place_panel_requested_{true};
+  float place_panel_time_{0.f};
 
   // Dwell click: the item looked at, for how long and whether it already
   // fired (the gaze must leave the item before it can fire again).

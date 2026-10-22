@@ -61,9 +61,6 @@ public class CardboardLauncherActivity extends AppCompatActivity
     glView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
     glView.setOnTouchListener(
         (v, event) -> {
-          if (nativeShouldLaunchDemo(nativeApp)) {
-            launchDemo(nativeDemoToLaunch(nativeApp));
-          }
           if (event.getAction() == MotionEvent.ACTION_DOWN) {
             // Signal a trigger event.
             glView.queueEvent(
@@ -172,6 +169,12 @@ public class CardboardLauncherActivity extends AppCompatActivity
     @Override
     public void onDrawFrame(GL10 gl10) {
       nativeOnDrawFrame(nativeApp);
+      // A demo can be chosen by gaze dwell, not only by a touch, so check every frame.
+      if (nativeShouldLaunchDemo(nativeApp)) {
+        String demoName = nativeDemoToLaunch(nativeApp);
+        nativeDemoLaunched(nativeApp);
+        runOnUiThread(() -> launchDemo(demoName));
+      }
     }
   }
 
@@ -220,7 +223,6 @@ public class CardboardLauncherActivity extends AppCompatActivity
       Class<?> activityClass = Class.forName(className);
       Intent intent = new Intent(this, activityClass);
       startActivity(intent);
-      nativeDemoLaunched(nativeApp);
     } catch (ClassNotFoundException e) {
       e.printStackTrace();
     }

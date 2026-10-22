@@ -57,6 +57,10 @@ constexpr float kSpeedSmoothing{0.15f};
 constexpr float kMinDragAngle{0.17f};
 constexpr float kMaxFrameSeconds{0.1f};
 
+// After start or resume the panel keeps turning to the head direction for this
+// long, since the first head tracker poses may not be settled yet.
+constexpr float kPlacePanelSeconds{0.7f};
+
 // The magnet sticks out above the top edge of the demo panel.
 constexpr float kMagnetY{2.92f};
 constexpr float kMagnetZ{-2.99f};
@@ -400,18 +404,15 @@ void CardboardLauncher::OnDrawFrame() {
       demo.SetModelViewProjection(projection_matrix * model_view_demo);
     }
 
+    // The tutorial screens open where the demo panel was left.
     if (state_ == State::TILT_TUTORIAL || state_ == State::BUTTON_TUTORIAL) {
-      tutorial_animator_.SetScreenPosition(eye_view, projection_matrix);
+      tutorial_animator_.SetScreenPosition(eye_view * panel_transform_,
+                                           projection_matrix);
     }
 
     model_view_projection_background_ = projection_matrix * eye_view;
-    // Only the demo panel can be carried; the tutorial stays in place.
-    const cardboard_demo::Matrix4x4 black_square_transform{
-        state_ == State::SHOW_DEMOS
-            ? panel_transform_
-            : cardboard_demo::GetTranslationMatrix({0.f, 0.f, 0.f})};
     const cardboard_demo::Matrix4x4 model_black_square =
-        black_square_transform *
+        panel_transform_ *
         cardboard_demo::GetTranslationMatrix({0.0f, kBlackSquareYOffset,
                                               kBlackSquareZOffset});
     model_view_projection_black_square_ =
@@ -451,6 +452,15 @@ void CardboardLauncher::OnTriggerEvent() {
 }
 
 void CardboardLauncher::UpdateInteraction(float dt) {
+  if (place_panel_requested_.exchange(false)) {
+    DetachPanel();
+    place_panel_time_ = kPlacePanelSeconds;
+  }
+  if (place_panel_time_ > 0.f) {
+    place_panel_time_ -= dt;
+    PlacePanelInFront();
+  }
+
   const std::array<float, 4> forward{GetHeadForward()};
   if (panel_attached_) {
     panel_transform_ = GetRigidInverse(head_view_) * panel_in_head_;
@@ -508,7 +518,8 @@ int CardboardLauncher::FindGazeItem(float* distance) {
   const std::array<float, 4> gaze_vector{0.f, 0.f, -1.f, 0.f};
 
   if (state_ == State::BUTTON_TUTORIAL &&
-      tutorial_animator_.IsNextClicked(head_view_, kAngleLimit)) {
+      tutorial_animator_.IsNextClicked(head_view_ * panel_transform_,
+                                       kAngleLimit)) {
     return kGazeNextButton;
   }
   if (state_ != State::SHOW_DEMOS) {
@@ -578,6 +589,26 @@ void CardboardLauncher::DetachPanel() {
   still_time_ = 0.f;
 }
 
+void CardboardLauncher::PlacePanelInFront() {
+  const std::array<float, 4> forward{GetHeadForward()};
+  const float length{
+      std::sqrt(forward[0] * forward[0] + forward[2] * forward[2])};
+  if (length < 0.1f) {
+    // Looking straight up or down, the yaw is undefined.
+    return;
+  }
+  // Rotation around Y that maps -Z onto the horizontal head direction.
+  const float s{-forward[0] / length};
+  const float c{-forward[2] / length};
+  cardboard_demo::Matrix4x4 rotation{
+      cardboard_demo::GetTranslationMatrix({0.f, 0.f, 0.f})};
+  rotation.m[0][0] = c;
+  rotation.m[0][2] = -s;
+  rotation.m[2][0] = s;
+  rotation.m[2][2] = c;
+  panel_transform_ = rotation;
+}
+
 std::array<float, 4> CardboardLauncher::GetHeadForward() const {
   cardboard_demo::Matrix4x4 head_in_world{GetRigidInverse(head_view_)};
   return head_in_world * std::array<float, 4>{0.f, 0.f, -1.f, 0.f};
@@ -629,6 +660,9 @@ void CardboardLauncher::OnPause() { CardboardHeadTracker_pause(head_tracker_); }
 
 void CardboardLauncher::OnResume() {
   CardboardHeadTracker_resume(head_tracker_);
+
+  // Show the panel in front of the user again, e.g. after a demo.
+  place_panel_requested_ = true;
 
   // Parameters may have changed.
   device_params_changed_ = true;
