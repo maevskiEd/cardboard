@@ -153,6 +153,80 @@ class HelloCardboardApp {
    */
   bool IsPointingAtTarget();
 
+  /**
+   * What the user's gaze is currently resting on.
+   */
+  enum class GazeItem { kNone, kTarget, kMagnet, kNewTargetButton, kRecenterButton };
+
+  /**
+   * Updates the panel pose, the gaze item and the dwell/detach timers. Must be
+   * called once per frame after |head_view_| has been updated.
+   *
+   * @param dt Seconds since the previous frame.
+   */
+  void UpdateInteraction(float dt);
+
+  /**
+   * Finds the item under the reticle.
+   *
+   * @param distance Receives the head-space distance to the item, if any.
+   * @return The gazed item, or kNone.
+   */
+  GazeItem FindGazeItem(float* distance);
+
+  /**
+   * Checks whether the reticle is inside a square panel element.
+   *
+   * @param local_x Element center X in panel space, meters.
+   * @param local_y Element center Y in panel space, meters.
+   * @param half_size Half of the element side, meters.
+   * @param distance Receives the head-space distance to the element.
+   * @return true if the user is looking at the element.
+   */
+  bool IsGazingAtPanelElement(float local_x, float local_y, float half_size,
+                              float* distance);
+
+  /**
+   * Performs the action of a gaze item (dwell finished or trigger pressed).
+   */
+  void Activate(GazeItem item);
+
+  /**
+   * Places the panel in front of the user, keeping it upright.
+   */
+  void PlacePanelInFront();
+
+  /**
+   * Attaches the panel to the head so it follows head rotation.
+   */
+  void AttachPanel();
+
+  /**
+   * Leaves the panel at its current place in the world.
+   */
+  void DetachPanel();
+
+  /**
+   * Gets the direction the head is looking at, in world space.
+   */
+  std::array<float, 4> GetHeadForward();
+
+  /**
+   * Draws the panel with its buttons for the current eye.
+   */
+  void DrawPanel(Matrix4x4 eye_view, Matrix4x4 projection);
+
+  /**
+   * Draws the reticle with the dwell/detach progress ring for the current eye.
+   */
+  void DrawReticle(Matrix4x4 eye_matrix, Matrix4x4 projection);
+
+  /**
+   * Draws a unit quad with the UI shader.
+   */
+  void DrawUiQuad(Matrix4x4 mvp, const std::array<float, 4>& color,
+                  float icon, float width, float height, float progress);
+
   jobject java_asset_mgr_;
   AAssetManager* asset_mgr_;
 
@@ -193,6 +267,37 @@ class HelloCardboardApp {
   std::vector<Texture> target_object_not_selected_textures_;
   std::vector<Texture> target_object_selected_textures_;
   int cur_target_object_;
+
+  GLuint ui_program_;
+  GLuint ui_position_param_;
+  GLuint ui_mvp_param_;
+  GLuint ui_color_param_;
+  GLuint ui_icon_param_;
+  GLuint ui_size_param_;
+  GLuint ui_progress_param_;
+
+  // Panel pose in world space. While attached it is recomputed every frame
+  // from |panel_in_head_|.
+  Matrix4x4 panel_model_;
+  Matrix4x4 panel_in_head_;
+  bool panel_placed_;
+  bool panel_attached_;
+
+  // Dwell click: the item looked at, for how long and whether it already fired
+  // (the gaze must leave the item before it can fire again).
+  GazeItem gaze_item_;
+  float gaze_distance_;
+  float dwell_time_;
+  bool dwell_fired_;
+
+  // Detach: the head has to turn first, then stay still.
+  std::array<float, 4> grab_forward_;
+  std::array<float, 4> prev_forward_;
+  bool drag_moved_;
+  float head_speed_;
+  float still_time_;
+
+  int64_t last_frame_time_;
 };
 
 }  // namespace ndk_hello_cardboard
