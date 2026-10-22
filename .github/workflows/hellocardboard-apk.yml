@@ -1,0 +1,42 @@
+name: HelloCardboard APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [posh]
+
+jobs:
+  build:
+    name: Build HelloCardboard debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install NDK and CMake
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "ndk;29.0.14206865" "cmake;3.22.1" "platforms;android-35"
+
+      - name: Build APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :hellocardboard-android:assembleDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hellocardboard-debug-apk
+          path: hellocardboard-android/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
