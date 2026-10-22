@@ -43,7 +43,6 @@
             </intent-filter>
         </activity>
 
-<!-- BEGIN: Open Source Activities
         <activity
             android:name="com.google.vr.cardboard.paperscope.demo.magicwindow.MagicWindowActivity"
             android:label="@string/title_activity_vr"
@@ -55,13 +54,6 @@
             android:name="com.google.vr.cardboard.paperscope.demo.about.AboutActivity"
             android:label="@string/about"
             android:screenOrientation="portrait"
-            android:exported="false" />
-
-        <activity
-            android:name="com.google.vr.cardboard.paperscope.demo.exhibit.ExhibitActivity"
-            android:theme="@style/Theme.AppCompat.NoActionBar"
-            android:resizeableActivity="false"
-            android:screenOrientation="landscape"
             android:exported="false" />
 
         <activity
@@ -85,7 +77,6 @@
             android:label="@string/settings_activity_title"
             android:screenOrientation="portrait"
             android:exported="false" />
-END: Open Source Activities -->
 
         </application>
 </manifest>
