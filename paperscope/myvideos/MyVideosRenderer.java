@@ -19,11 +19,13 @@ import com.google.cardboard.sdk.HeadTransform;
 import com.google.cardboard.sdk.Viewport;
 import com.google.common.base.VerifyException;
 import com.google.common.flogger.FluentLogger;
+import com.google.vr.cardboard.paperscope.demo.common.GazeReticle;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.util.function.IntConsumer;
 import javax.microedition.khronos.egl.EGLConfig;
 
 /** Renderer that displays a main video screen and a grid of video thumbnails around the viewer. */
@@ -330,6 +332,19 @@ public class MyVideosRenderer
   // Video aspect ratio. Will be updated according to video played.
   private float videoAspectRatio = DEFAULT_ASPECT_RATIO;
 
+  // Gaze dwell: looking at a thumbnail (not the one playing) for DWELL_MILLIS plays it. The gaze
+  // has to leave the thumbnail before it can fire again.
+  private static final long DWELL_MILLIS = 1500;
+  private final GazeReticle reticle = new GazeReticle();
+  private final float[] worldFromHeadMatrix = new float[16];
+  private final float[] eyeFromHeadMatrix = new float[16];
+  private int dwellThumbnail = -1;
+  private long dwellStartTime;
+  private boolean dwellFired;
+  private float dwellProgress;
+  // Called on the GL thread with the thumbnail id when a dwell completes.
+  private IntConsumer thumbnailDwellListener;
+
   public MyVideosRenderer(Context context) {
     this.context = context;
 
@@ -390,6 +405,10 @@ public class MyVideosRenderer
 
   public void setSurfaceTextureListener(SurfaceTextureListener surfaceTextureListener) {
     this.surfaceTextureListener = surfaceTextureListener;
+  }
+
+  public void setThumbnailDwellListener(IntConsumer thumbnailDwellListener) {
+    this.thumbnailDwellListener = thumbnailDwellListener;
   }
 
   public void setIsBuffering(boolean isBuffering) {}
@@ -501,6 +520,9 @@ public class MyVideosRenderer
     }
     animationTime = SystemClock.uptimeMillis() - initialTime;
 
+    Matrix.invertM(worldFromHeadMatrix, 0, headViewMatrix, 0);
+    updateDwell();
+
     if (enableFramebuffer) {
       frameCounter++;
       if (frameCounter == 5) {
@@ -522,6 +544,44 @@ public class MyVideosRenderer
     drawVideo(eye);
     drawSeekBar(eye);
     drawThumbnailSphere(eye, 46);
+    drawReticle(eye);
+  }
+
+  /** Advances the dwell timer for the thumbnail found under the gaze in the previous frame. */
+  private void updateDwell() {
+    int target = activeThumbnail;
+    if (target < 0
+        || target >= NUM_THUMBNAIL_TEXTURES
+        || thumbnailBitmaps[target] == null
+        || target == nowPlayingIndex) {
+      target = -1;
+    }
+    long now = SystemClock.uptimeMillis();
+    if (target != dwellThumbnail) {
+      dwellThumbnail = target;
+      dwellStartTime = now;
+      dwellFired = false;
+    }
+    if (dwellThumbnail < 0 || dwellFired) {
+      dwellProgress = 0f;
+      return;
+    }
+    dwellProgress = (now - dwellStartTime) / (float) DWELL_MILLIS;
+    if (dwellProgress >= 1f) {
+      dwellFired = true;
+      dwellProgress = 0f;
+      if (thumbnailDwellListener != null) {
+        thumbnailDwellListener.accept(dwellThumbnail);
+      }
+    }
+  }
+
+  private void drawReticle(Eye eye) {
+    Matrix.multiplyMM(eyeFromHeadMatrix, 0, eye.getEyeView(), 0, worldFromHeadMatrix, 0);
+    // Drawn at the depth of the gazed object so both eyes converge on it.
+    float distance =
+        dwellThumbnail >= 0 ? thumbnailDistances[dwellThumbnail] : CAMERA_DISTANCE;
+    reticle.draw(eyeFromHeadMatrix, eye.getPerspective(Z_NEAR, Z_FAR), distance, dwellProgress);
   }
 
   @Override
@@ -951,6 +1011,7 @@ public class MyVideosRenderer
     videoProgramHolder = createProgramHolder(VIDEO_FRAGMENT_SHADER, false);
     spriteProgramHolder = createProgramHolder(FRAGMENT_SHADER, true);
     fsqProgramHolder = createFsqProgramHolder(FSQ_VERTEX_SHADER, FSQ_FRAGMENT_SHADER);
+    reticle.init();
 
     Matrix.setLookAtM(
         lookAtMatrix, 0, 0, CAMERA_HEIGHT, 0, 0, CAMERA_HEIGHT, CAMERA_DISTANCE, 0, 1, 0);
@@ -1242,5 +1303,6 @@ public class MyVideosRenderer
     GLES20.glDeleteProgram(videoProgramHolder.program);
     GLES20.glDeleteProgram(spriteProgramHolder.program);
     GLES20.glDeleteProgram(fsqProgramHolder.program);
+    reticle.release();
   }
 }

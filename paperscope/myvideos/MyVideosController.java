@@ -1,5 +1,7 @@
 package com.google.vr.cardboard.paperscope.demo.myvideos;
 
+import android.os.Handler;
+import android.os.Looper;
 import com.google.cardboard.sdk.CardboardView;
 import com.google.vr.cardboard.paperscope.demo.common.DemoBaseController;
 
@@ -11,6 +13,10 @@ public class MyVideosController extends DemoBaseController<MyVideosRenderer> {
     super(cardboardView);
     renderer = new MyVideosRenderer(cardboardView.getContext());
     sequencer = new VideoSequencer(cardboardView.getContext(), cardboardView, renderer);
+    // The dwell fires on the GL thread; the player is driven from the UI thread like the trigger.
+    Handler mainHandler = new Handler(Looper.getMainLooper());
+    renderer.setThumbnailDwellListener(
+        id -> mainHandler.post(() -> sequencer.playThumbnailVideo(id)));
     this.cardboardView.setRenderer(renderer);
   }
 

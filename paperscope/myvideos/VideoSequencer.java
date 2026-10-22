@@ -83,12 +83,16 @@ public class VideoSequencer implements MyVideosPlayer.Listener {
   }
 
   public void playTargetedVideo() {
+    playThumbnailVideo(renderer.getActiveThumbnailId());
+  }
+
+  /** Plays the video of the given thumbnail, e.g. after a gaze dwell on it. */
+  public void playThumbnailVideo(final int videoIndex) {
     // Might be null if the trigger is pulled before any video is loaded.
     if (videoList == null) {
       return;
     }
 
-    final int videoIndex = renderer.getActiveThumbnailId();
     if (videoIndex < 0 || videoIndex >= videoList.size()) {
       logger.atSevere().log("Video index out of bounds");
       return;
