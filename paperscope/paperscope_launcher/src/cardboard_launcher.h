@@ -24,6 +24,7 @@
 #include <GLES2/gl2.h>
 #include "cardboard.h"
 #include "demo_icon.h"
+#include "gaze_ui.h"
 #include "text_renderer.h"
 #include "tutorial_animator.h"
 #include "util.h"
@@ -280,6 +281,94 @@ class CardboardLauncher {
 
   cardboard_demo::Matrix4x4 model_view_projection_black_square_;
   cardboard_demo::TextRenderer text_renderer_;
+
+  // Gaze interaction: dwell click, reticle and the magnet that carries the
+  // demo panel (black square + demo icons) along with the head.
+  static constexpr int kGazeNone = -1;
+  static constexpr int kGazeMagnet = 100;
+  static constexpr int kGazeNextButton = 101;
+
+  /**
+   * Updates the panel pose, the gazed item and the dwell/detach timers. Must
+   * be called once per frame after |head_view_| has been updated.
+   *
+   * @param dt Seconds since the previous frame.
+   */
+  void UpdateInteraction(float dt);
+
+  /**
+   * Finds the item under the reticle: a demo index, kGazeMagnet,
+   * kGazeNextButton or kGazeNone.
+   *
+   * @param distance Receives the head-space distance to the item, if known.
+   */
+  int FindGazeItem(float* distance);
+
+  /**
+   * Performs the action of a gaze item (dwell finished or trigger pressed).
+   */
+  void Activate(int item);
+
+  /**
+   * Attaches the demo panel to the head so it follows head rotation.
+   */
+  void AttachPanel();
+
+  /**
+   * Leaves the demo panel at its current place in the world.
+   */
+  void DetachPanel();
+
+  /**
+   * Gets the direction the head is looking at, in world space.
+   */
+  std::array<float, 4> GetHeadForward() const;
+
+  /**
+   * Gets the world model of the magnet.
+   */
+  cardboard_demo::Matrix4x4 GetMagnetModel() const;
+
+  /**
+   * Draws the magnet for the current eye.
+   */
+  void DrawMagnet(const cardboard_demo::Matrix4x4& eye_view,
+                  const cardboard_demo::Matrix4x4& projection);
+
+  /**
+   * Draws the reticle with the dwell/detach progress ring for the current eye.
+   */
+  void DrawReticle(const cardboard_demo::Matrix4x4& eye_matrix,
+                   const cardboard_demo::Matrix4x4& projection);
+
+  GazeUi gaze_ui_;
+
+  // Demo models as created, before |panel_transform_| is applied.
+  std::vector<cardboard_demo::Matrix4x4> demo_base_models_;
+
+  // World transform applied to the demo panel. While attached it is recomputed
+  // every frame from |panel_in_head_|.
+  cardboard_demo::Matrix4x4 panel_transform_{
+      cardboard_demo::GetTranslationMatrix({0.f, 0.f, 0.f})};
+  cardboard_demo::Matrix4x4 panel_in_head_{
+      cardboard_demo::GetTranslationMatrix({0.f, 0.f, 0.f})};
+  bool panel_attached_{false};
+
+  // Dwell click: the item looked at, for how long and whether it already
+  // fired (the gaze must leave the item before it can fire again).
+  int gaze_item_{kGazeNone};
+  float gaze_distance_{3.f};
+  float dwell_time_{0.f};
+  bool dwell_fired_{false};
+
+  // Detach: the head has to turn first, then stay still.
+  std::array<float, 4> grab_forward_{0.f, 0.f, -1.f, 0.f};
+  std::array<float, 4> prev_forward_{0.f, 0.f, -1.f, 0.f};
+  bool drag_moved_{false};
+  float head_speed_{0.f};
+  float still_time_{0.f};
+
+  int64_t last_frame_time_{0};
 };
 
 }  // namespace cardboard_launcher

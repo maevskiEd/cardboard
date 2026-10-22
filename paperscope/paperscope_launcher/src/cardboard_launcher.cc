@@ -19,6 +19,7 @@
 #include <android/asset_manager_jni.h>
 #include <android/log.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -41,8 +42,58 @@ constexpr int32_t kVelocityFilterCutoffFrequency{6};
 constexpr uint64_t kPredictionTimeWithoutVsyncNanos{50000000};
 
 // Angle threshold for determining whether the controller is pointing at the
-// demo icon.
-constexpr float kAngleLimit{0.1f};
+// demo icon. Icons are about 0.23 rad apart, so the zones may overlap; the
+// icon closest to the gaze wins.
+constexpr float kAngleLimit{0.14f};
+
+// Gaze interaction timings. Looking at an item for kDwellSeconds activates it.
+// A carried panel is released when the head stays still for kDetachSeconds
+// (angular speed below kStillSpeed, rad/s) after having turned at least
+// kMinDragAngle radians since the grab.
+constexpr float kDwellSeconds{1.5f};
+constexpr float kDetachSeconds{1.5f};
+constexpr float kStillSpeed{0.2f};
+constexpr float kSpeedSmoothing{0.15f};
+constexpr float kMinDragAngle{0.17f};
+constexpr float kMaxFrameSeconds{0.1f};
+
+// The magnet sticks out above the top edge of the demo panel.
+constexpr float kMagnetY{2.92f};
+constexpr float kMagnetZ{-2.99f};
+constexpr float kMagnetHalf{0.12f};
+// Hit area is a bit larger than the drawn magnet.
+constexpr float kGazeTolerance{1.2f};
+
+// Reticle size relative to its distance, so it keeps the same angular size.
+constexpr float kReticleSize{0.06f};
+constexpr float kDefaultReticleDistance{3.f};
+
+constexpr std::array<float, 4> kMagnetColor{0.25f, 0.25f, 0.3f, 1.f};
+constexpr std::array<float, 4> kMagnetGazedColor{0.4f, 0.4f, 0.48f, 1.f};
+constexpr std::array<float, 4> kMagnetAttachedColor{0.85f, 0.55f, 0.1f, 1.f};
+constexpr std::array<float, 4> kReticleColor{1.f, 1.f, 1.f, 1.f};
+constexpr std::array<float, 4> kReticleDetachColor{1.f, 0.65f, 0.15f, 1.f};
+
+// Inverts a rotation + translation matrix (column-major, m[column][row]).
+cardboard_demo::Matrix4x4 GetRigidInverse(const cardboard_demo::Matrix4x4& mat) {
+  cardboard_demo::Matrix4x4 inv;
+  for (int c = 0; c < 3; ++c) {
+    for (int r = 0; r < 3; ++r) {
+      inv.m[c][r] = mat.m[r][c];
+    }
+    inv.m[c][3] = 0.0f;
+  }
+  for (int r = 0; r < 3; ++r) {
+    inv.m[3][r] = -(mat.m[r][0] * mat.m[3][0] + mat.m[r][1] * mat.m[3][1] +
+                    mat.m[r][2] * mat.m[3][2]);
+  }
+  inv.m[3][3] = 1.0f;
+  return inv;
+}
+
+float VectorLength(const std::array<float, 4>& vec) {
+  return std::sqrt(vec[0] * vec[0] + vec[1] * vec[1] + vec[2] * vec[2]);
+}
 
 // Distance between the demos.
 constexpr float kDistanceBetweenDemos{0.7f};
@@ -221,6 +272,13 @@ void CardboardLauncher::OnSurfaceCreated(JNIEnv* env) {
     demos_.emplace_back(demo_icon_data.at(i), pos, &text_renderer_);
   }
 
+  demo_base_models_.clear();
+  for (const DemoIcon& demo : demos_) {
+    demo_base_models_.push_back(demo.GetModel());
+  }
+
+  gaze_ui_.Init();
+
   tutorial_animator_.SetJNIEnv(env);
 
   LoadBlackBackground();
@@ -306,6 +364,14 @@ void CardboardLauncher::OnDrawFrame() {
   head_view_ = head_view_ * cardboard_demo::GetTranslationMatrix(
                                 {0.0f, kDefaultFloorHeight, 0.0f});
 
+  const int64_t now{cardboard_demo::GetBootTimeNano()};
+  const float dt{last_frame_time_ == 0
+                     ? 0.f
+                     : std::min((now - last_frame_time_) * 1e-9f,
+                                kMaxFrameSeconds)};
+  last_frame_time_ = now;
+  UpdateInteraction(dt);
+
   // Bind buffer.
   glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_);
 
@@ -339,7 +405,13 @@ void CardboardLauncher::OnDrawFrame() {
     }
 
     model_view_projection_background_ = projection_matrix * eye_view;
+    // Only the demo panel can be carried; the tutorial stays in place.
+    const cardboard_demo::Matrix4x4 black_square_transform{
+        state_ == State::SHOW_DEMOS
+            ? panel_transform_
+            : cardboard_demo::GetTranslationMatrix({0.f, 0.f, 0.f})};
     const cardboard_demo::Matrix4x4 model_black_square =
+        black_square_transform *
         cardboard_demo::GetTranslationMatrix({0.0f, kBlackSquareYOffset,
                                               kBlackSquareZOffset});
     model_view_projection_black_square_ =
@@ -350,6 +422,11 @@ void CardboardLauncher::OnDrawFrame() {
 
     // Update State Machine.
     UpdateState();
+
+    if (state_ == State::SHOW_DEMOS) {
+      DrawMagnet(eye_view, projection_matrix);
+    }
+    DrawReticle(eye_matrix, projection_matrix);
   }
 
   // Render.
@@ -362,24 +439,190 @@ void CardboardLauncher::OnDrawFrame() {
 }
 
 void CardboardLauncher::OnTriggerEvent() {
-  // Check if the pointed demo represents the built-in tutorial.
-  if (IsPointingAtDemo(demos_.at(0).GetModel())) {
-    LOGD("Launch Tutorial");
-    last_state_event_ = StateEvent::TUTORIAL_SELECTED;
+  // The trigger is an instant click on whatever the reticle is on. While the
+  // panel is carried it releases the panel instead.
+  if (panel_attached_) {
+    DetachPanel();
   } else {
-    for (size_t i = 1; i < demos_.size(); ++i) {
-      if (IsPointingAtDemo(demos_.at(i).GetModel()) &&
-          state_ == State::SHOW_DEMOS) {
-        LOGD("Launching Demo %s", demos_.at(i).GetDemoName().c_str());
-        should_launch_demo_ = true;
-        demo_to_launch_ = demos_.at(i).GetDemoName();
-      }
+    Activate(gaze_item_);
+  }
+  // Do not fire the dwell on the same item again until the gaze leaves it.
+  dwell_fired_ = true;
+}
+
+void CardboardLauncher::UpdateInteraction(float dt) {
+  const std::array<float, 4> forward{GetHeadForward()};
+  if (panel_attached_) {
+    panel_transform_ = GetRigidInverse(head_view_) * panel_in_head_;
+
+    if (dt > 0.f) {
+      const float speed{
+          cardboard_demo::AngleBetweenVectors(forward, prev_forward_) / dt};
+      head_speed_ += (speed - head_speed_) * kSpeedSmoothing;
+    }
+    if (!drag_moved_ && cardboard_demo::AngleBetweenVectors(
+                            forward, grab_forward_) > kMinDragAngle) {
+      drag_moved_ = true;
+    }
+    if (drag_moved_ && head_speed_ < kStillSpeed) {
+      still_time_ += dt;
+    } else {
+      still_time_ = 0.f;
+    }
+    if (still_time_ >= kDetachSeconds) {
+      DetachPanel();
     }
   }
+  prev_forward_ = forward;
 
-  if (tutorial_animator_.IsNextClicked(head_view_, kAngleLimit)) {
-    last_state_event_ = StateEvent::TUTORIAL_NEXT_SELECTED;
+  for (size_t i = 0; i < demos_.size() && i < demo_base_models_.size(); ++i) {
+    demos_.at(i).SetModel(panel_transform_ * demo_base_models_.at(i));
   }
+
+  float distance{kDefaultReticleDistance};
+  int item{FindGazeItem(&distance)};
+  if (panel_attached_) {
+    // The magnet stays under the reticle while the panel is carried.
+    item = kGazeMagnet;
+  }
+  gaze_distance_ = distance;
+
+  if (item != gaze_item_) {
+    gaze_item_ = item;
+    dwell_time_ = 0.f;
+    dwell_fired_ = false;
+    return;
+  }
+  if (panel_attached_ || item == kGazeNone || dwell_fired_) {
+    return;
+  }
+  dwell_time_ += dt;
+  if (dwell_time_ >= kDwellSeconds) {
+    dwell_fired_ = true;
+    Activate(item);
+  }
+}
+
+int CardboardLauncher::FindGazeItem(float* distance) {
+  const std::array<float, 4> origin{0.f, 0.f, 0.f, 1.f};
+  const std::array<float, 4> gaze_vector{0.f, 0.f, -1.f, 0.f};
+
+  if (state_ == State::BUTTON_TUTORIAL &&
+      tutorial_animator_.IsNextClicked(head_view_, kAngleLimit)) {
+    return kGazeNextButton;
+  }
+  if (state_ != State::SHOW_DEMOS) {
+    return kGazeNone;
+  }
+
+  const std::array<float, 4> magnet_in_head{(head_view_ * GetMagnetModel()) *
+                                            origin};
+  const float magnet_distance{VectorLength(magnet_in_head)};
+  if (magnet_distance > 1e-3f &&
+      cardboard_demo::AngleBetweenVectors(gaze_vector, magnet_in_head) <
+          std::atan(kMagnetHalf * kGazeTolerance / magnet_distance)) {
+    *distance = magnet_distance;
+    return kGazeMagnet;
+  }
+
+  int best{kGazeNone};
+  float best_angle{kAngleLimit};
+  for (size_t i = 0; i < demos_.size(); ++i) {
+    const std::array<float, 4> demo_in_head{
+        (head_view_ * demos_.at(i).GetModel()) * origin};
+    const float angle{
+        cardboard_demo::AngleBetweenVectors(gaze_vector, demo_in_head)};
+    if (angle < best_angle) {
+      best_angle = angle;
+      best = static_cast<int>(i);
+      *distance = VectorLength(demo_in_head);
+    }
+  }
+  return best;
+}
+
+void CardboardLauncher::Activate(int item) {
+  if (item == kGazeMagnet) {
+    if (panel_attached_) {
+      DetachPanel();
+    } else {
+      AttachPanel();
+    }
+  } else if (item == kGazeNextButton) {
+    last_state_event_ = StateEvent::TUTORIAL_NEXT_SELECTED;
+  } else if (item == 0) {
+    // The first demo represents the built-in tutorial.
+    LOGD("Launch Tutorial");
+    last_state_event_ = StateEvent::TUTORIAL_SELECTED;
+  } else if (item > 0 && item < static_cast<int>(demos_.size()) &&
+             state_ == State::SHOW_DEMOS) {
+    LOGD("Launching Demo %s", demos_.at(item).GetDemoName().c_str());
+    should_launch_demo_ = true;
+    demo_to_launch_ = demos_.at(item).GetDemoName();
+  }
+}
+
+void CardboardLauncher::AttachPanel() {
+  panel_in_head_ = head_view_ * panel_transform_;
+  panel_attached_ = true;
+  grab_forward_ = GetHeadForward();
+  prev_forward_ = grab_forward_;
+  drag_moved_ = false;
+  head_speed_ = 0.f;
+  still_time_ = 0.f;
+}
+
+void CardboardLauncher::DetachPanel() {
+  panel_attached_ = false;
+  drag_moved_ = false;
+  still_time_ = 0.f;
+}
+
+std::array<float, 4> CardboardLauncher::GetHeadForward() const {
+  cardboard_demo::Matrix4x4 head_in_world{GetRigidInverse(head_view_)};
+  return head_in_world * std::array<float, 4>{0.f, 0.f, -1.f, 0.f};
+}
+
+cardboard_demo::Matrix4x4 CardboardLauncher::GetMagnetModel() const {
+  return panel_transform_ *
+         cardboard_demo::GetTranslationMatrix({0.f, kMagnetY, kMagnetZ});
+}
+
+void CardboardLauncher::DrawMagnet(const cardboard_demo::Matrix4x4& eye_view,
+                                   const cardboard_demo::Matrix4x4& projection) {
+  const cardboard_demo::Matrix4x4 mvp{
+      projection * eye_view * GetMagnetModel() *
+      cardboard_demo::GetScaleMatrix(
+          {2.f * kMagnetHalf, 2.f * kMagnetHalf, 1.f})};
+  const std::array<float, 4>& color{
+      panel_attached_                ? kMagnetAttachedColor
+      : gaze_item_ == kGazeMagnet ? kMagnetGazedColor
+                                     : kMagnetColor};
+  gaze_ui_.DrawMagnet(mvp, color);
+}
+
+void CardboardLauncher::DrawReticle(
+    const cardboard_demo::Matrix4x4& eye_matrix,
+    const cardboard_demo::Matrix4x4& projection) {
+  float progress{0.f};
+  if (panel_attached_) {
+    progress = drag_moved_ ? still_time_ / kDetachSeconds : 0.f;
+  } else if (gaze_item_ != kGazeNone && !dwell_fired_) {
+    progress = dwell_time_ / kDwellSeconds;
+  }
+
+  // Drawn at the depth of the gazed item so both eyes converge on it.
+  const float size{kReticleSize * gaze_distance_};
+  const cardboard_demo::Matrix4x4 mvp{
+      projection * eye_matrix *
+      cardboard_demo::GetTranslationMatrix({0.f, 0.f, -gaze_distance_}) *
+      cardboard_demo::GetScaleMatrix({size, size, 1.f})};
+
+  glDisable(GL_DEPTH_TEST);
+  gaze_ui_.DrawReticle(mvp, panel_attached_ ? kReticleDetachColor
+                                            : kReticleColor,
+                       std::min(progress, 1.f));
+  glEnable(GL_DEPTH_TEST);
 }
 
 void CardboardLauncher::OnPause() { CardboardHeadTracker_pause(head_tracker_); }
@@ -576,14 +819,18 @@ void CardboardLauncher::UpdateState() {
 void CardboardLauncher::DrawDemos() {
   glUseProgram(obj_program_);
 
-  for (DemoIcon& demo : demos_) {
+  for (size_t i = 0; i < demos_.size(); ++i) {
+    DemoIcon& demo = demos_.at(i);
     const std::array<float, 16> target_array {
         demo.GetModelViewProjection().ToGlArray()};
     glUniformMatrix4fv(obj_model_view_projection_param_, 1, GL_FALSE,
                        target_array.data());
 
+    // Highlight only the icon chosen by the gaze, so it matches what a dwell
+    // or a trigger would activate.
+    demo.SetPointingAtDemo(!panel_attached_ &&
+                           gaze_item_ == static_cast<int>(i));
     demo.Draw();
-    demo.SetPointingAtDemo(IsPointingAtDemo(demo.GetModel()));
   }
   cardboard_demo::CHECKGLERROR("DrawDemos");
 }
