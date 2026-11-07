@@ -24,6 +24,7 @@ add_compile_options(-Wall -Wextra)
 option(CARDBOARDSDK_RENDERING_GLESv3 "Enable rendering with GLESv3" ON)
 option(CARDBOARDSDK_RENDERING_VULKAN "Enable rendering with Vulkan" ON)
 option(CARDBOARDSDK_UNITY_PLUGIN "Enable use as a Unity plugin" ON)
+option(CARDBOARDSDK_JAVA_API_JNI "Build cardboard_sdk_jni: self-contained AAR for java_api apps without NDK" OFF)
 
 # Standard Android dependencies
 find_library(ANDROID_LIB android)
@@ -151,3 +152,21 @@ set_property(
     APPEND
     PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cardboard_api.lds"
 )
+
+# Self-contained AAR (gradlew :sdk:assembleRelease -PcardboardAar): java_api loads cardboard_sdk_jni,
+# which apps normally compile themselves (see paperscope/CMakeLists.txt).
+if(CARDBOARDSDK_JAVA_API_JNI)
+    add_library(cardboard_sdk_jni SHARED
+        ../java_api/src/main/jni/cardboard_jni.cc
+        jni_utils/android/jni_utils.cc)
+    target_link_libraries(cardboard_sdk_jni PRIVATE
+        GfxPluginCardboard
+        ${ANDROID_LIB}
+        ${LOG_LIB}
+        ${GLESv2_LIB})
+    target_link_options(cardboard_sdk_jni PRIVATE "-Wl,-z,max-page-size=16384")
+    # --undefined-version: without Unity cardboard_api.lds names symbols that no longer exist.
+    target_link_options(GfxPluginCardboard PRIVATE
+        "-Wl,-z,max-page-size=16384"
+        "-Wl,--undefined-version")
+endif()

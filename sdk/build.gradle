@@ -1,6 +1,10 @@
 apply plugin: 'com.android.library'
 apply plugin: 'com.google.protobuf'
 
+// Self-contained AAR for apps without NDK: gradlew :sdk:assembleRelease -PcardboardAar
+// Not minified: public java_api classes must keep their names, the app's R8 shrinks them.
+def standaloneAar = project.hasProperty('cardboardAar')
+
 android {
     compileSdk = 35
     lintOptions {
@@ -24,6 +28,11 @@ android {
         }
         externalNativeBuild.cmake {
             arguments "-DANDROID_STL=c++_static"
+            if (standaloneAar) {
+                arguments "-DCARDBOARDSDK_JAVA_API_JNI=ON",
+                        "-DCARDBOARDSDK_UNITY_PLUGIN=OFF",
+                        "-DCARDBOARDSDK_RENDERING_VULKAN=OFF"
+            }
         }
         defaultConfig {
             consumerProguardFiles 'proguard-rules.pro'
@@ -31,7 +40,7 @@ android {
     }
     buildTypes {
         release {
-            minifyEnabled true
+            minifyEnabled !standaloneAar
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
